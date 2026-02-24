@@ -23,7 +23,7 @@ const VILLAGER_SPAWN_TIME=60; // seconds for hut to spawn a villager
 const MAX_BFS_NODES=3000;    // pathfinding iteration cap
 const MAX_FRAME_DT=0.5;      // seconds; frames longer than this are skipped
 const VW=960,VH=640;
-const TOP_H=48,RIGHT_W=180,GAME_W=VW-RIGHT_W,GAME_H=VH-TOP_H; // game area 780×592
+const TOP_H=56,RIGHT_W=180,GAME_W=VW-RIGHT_W,GAME_H=VH-TOP_H; // game area 780×584
 const MM_W=160,MM_H=120; // minimap
 const INFO_W=240,INFO_H=140; // info panel
 
@@ -50,7 +50,9 @@ const BDEFS={
   Mine:      {w:2,h:2,hp:100,cost:{wood:30,stone:20},name:'Mine'},
   Barracks:  {w:3,h:2,hp:150,cost:{wood:50,stone:30},name:'Barracks'},
   Tower:     {w:1,h:1,hp:120,cost:{stone:40},     atk:8,range:160,atkSpd:1.5,name:'Tower'},
-  Wall:      {w:1,h:1,hp:80, cost:{stone:10},     name:'Wall'}
+  Wall:      {w:1,h:1,hp:80, cost:{stone:10},     name:'Wall'},
+  Market:    {w:2,h:2,hp:120,cost:{wood:40,stone:20,gold:10},name:'Market'},
+  Watchtower:{w:1,h:1,hp:80, cost:{stone:25,wood:15},name:'Watchtower'}
 };
 
 // Unit definitions
@@ -99,8 +101,11 @@ function newGame(){
       selBox:null},
     tuts:[],tutIdx:0,tutTimer:0,
     time:0,waterT:0,
-    buildBtns:[],speedBtns:[],trainBtns:[],
-    playAgainBtn:null,minimapRect:null
+    buildBtns:[],speedBtns:[],trainBtns:[],techBtns:[],
+    playAgainBtn:null,minimapRect:null,
+    tech:{ironTools:false,warTraining:false,stonecutting:false},
+    notifications:[],floatTexts:[],screenShake:null,
+    scoutTimer:90,enemyTowerBuilt:false,_wallUpgradeBtn:null,_marketBtn1:null,_marketBtn2:null
   };
   genMap();
   initFog();
@@ -193,7 +198,8 @@ function updateFog(){
   }
   for(const b of G.buildings){
     if(b.owner!=='player')continue;
-    revealAt(Math.floor(b.x/TILE),Math.floor(b.y/TILE),BSR);
+    const bsr2=b.type==='Watchtower'?12:BSR;
+    revealAt(Math.floor(b.x/TILE),Math.floor(b.y/TILE),bsr2);
   }
 }
 
@@ -264,20 +270,21 @@ function mkBuilding(type,tx,ty,owner){
     x:tx*TILE+d.w*TILE/2,y:ty*TILE+d.h*TILE/2,
     w:d.w,h:d.h,hp:d.hp,maxHp:d.hp,owner,
     workers:[],spawnT:0,trainQ:[],trainT:0,atkT:0,farmT:0,
-    alpha:1,dying:false,remove:false
+    alpha:1,dying:false,remove:false,level:type==='Wall'?1:undefined
   };
   for(let dy=0;dy<d.h;dy++)for(let dx=0;dx<d.w;dx++){
     const nx=tx+dx,ny=ty+dy;
     if(nx>=0&&nx<MAP_W&&ny>=0&&ny<MAP_H&&G.map[ny]&&G.map[ny][nx])
       G.map[ny][nx].bld=b;
   }
+  if(owner==='player'&&G.tech&&G.tech.stonecutting){b.hp=Math.floor(b.hp*1.25);b.maxHp=b.hp;}
   G.buildings.push(b);
   return b;
 }
 
 function mkUnit(type,x,y,owner){
   const d=UDEFS[type]||UDEFS.Villager;
-  return {
+  const _u={
     id:UID++,type,x,y,vx:0,vy:0,
     hp:d.hp,maxHp:d.hp,atk:d.atk,range:d.range,atkSpd:d.atkSpd,
     proj:d.proj,spd:d.spd,owner,
@@ -291,6 +298,8 @@ function mkUnit(type,x,y,owner){
     atkT:0,alpha:1,dying:false,remove:false,selected:false,
     wanderT:0
   };
+  if(owner==='player'&&G.tech&&G.tech.warTraining&&(type==='Militia'||type==='Soldier'||type==='Archer'))_u.atk+=3;
+  return _u;
 }
 
 // ─────────────────────────────────────────────
@@ -582,13 +591,31 @@ function destroyBld(b){
 // PROJECTILES & PARTICLES
 // ─────────────────────────────────────────────
 function spawnHit(x,y){
-  for(let i=0;i<4;i++)G.particles.push({x,y,vx:(Math.random()-0.5)*80,vy:(Math.random()-0.5)*80-30,life:0.35,ml:0.35,col:'#ffcc44',sz:1.5+Math.random()*2});
+  for(let i=0;i<6;i++)G.particles.push({x,y,vx:(Math.random()-0.5)*110,vy:(Math.random()-0.5)*110-40,life:0.4,ml:0.4,col:'#ffaa22',sz:1.5+Math.random()*2.5});
 }
 function spawnDeath(x,y,col){
-  for(let i=0;i<10;i++){
-    const a=i/10*Math.PI*2;
-    G.particles.push({x,y,vx:Math.cos(a)*(50+Math.random()*50),vy:Math.sin(a)*(50+Math.random()*50),life:0.9,ml:0.9,col,sz:2+Math.random()*4});
+  for(let i=0;i<15;i++){
+    const a=i/15*Math.PI*2,spd=40+Math.random()*80;
+    G.particles.push({x,y,vx:Math.cos(a)*spd,vy:Math.sin(a)*spd,life:1.0,ml:1.0,col,sz:2+Math.random()*4});
   }
+}
+function spawnWoodChip(x,y){
+  for(let i=0;i<3;i++)G.particles.push({x,y,vx:(Math.random()-0.5)*60,vy:-20-Math.random()*30,life:0.5,ml:0.5,col:'#8B5E3C',sz:2});
+}
+function spawnStoneDust(x,y){
+  for(let i=0;i<3;i++)G.particles.push({x,y,vx:(Math.random()-0.5)*40,vy:-15-Math.random()*25,life:0.6,ml:0.6,col:'#aaa080',sz:1.5});
+}
+function spawnSmoke(x,y){
+  if(Math.random()<0.015)G.particles.push({x,y,vx:(Math.random()-0.5)*8,vy:-16-Math.random()*10,life:1.5,ml:1.5,col:'rgba(80,70,60,0.5)',sz:3+Math.random()*3});
+}
+function addNotif(text){
+  if(!G.notifications)return;
+  G.notifications.unshift({text,timer:4});
+  if(G.notifications.length>5)G.notifications.pop();
+}
+function spawnFloatText(x,y,text,col){
+  if(!G.floatTexts)return;
+  G.floatTexts.push({x,y,text,col:col||'#ff8844',timer:1.2,vy:-28});
 }
 function updParticles(dt){
   for(const p of G.particles){p.x+=p.vx*dt;p.y+=p.vy*dt;p.vy+=80*dt;p.life-=dt;}
@@ -645,6 +672,8 @@ function updBuildings(dt){
       if(b.spawnT>=VILLAGER_SPAWN_TIME){b.spawnT=0;if(G.pop<G.maxPop){const v=mkUnit('Villager',b.x+(Math.random()-0.5)*24,b.y+20,'player');v.name=NAMES[Math.floor(Math.random()*NAMES.length)];G.units.push(v);}}
     }
     if(b.type==='TownHall'&&b.owner==='player')G.res.gold=Math.min(9999,G.res.gold+0.05*dt);
+    if(b.type==='Market'&&b.owner==='player')G.res.gold=Math.min(9999,G.res.gold+0.15*dt);
+    if(b.type==='Hut'&&b.owner==='player')spawnSmoke(b.x,b.y-b.h*TILE/2);
     // Farm passive food
     if(b.type==='Farm'&&b.owner==='player'){
       b.farmT+=dt;
